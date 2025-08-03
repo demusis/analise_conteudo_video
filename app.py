@@ -43,42 +43,90 @@ def save_categories_to_file(categories_list):
 # ----------------------------- App Setup -----------------------------------
 app = Flask(__name__)
 
-# ------------------------ Image Processing Pipeline --------------------------
-def apply_filter_pipeline(image_bytes, filters_array):
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if img is None: return None
+def clear_data_folders():
+    """Remove todos os arquivos das pastas de vídeos e frames."""
+    folders_to_clear = [VIDEOS_DIR, FRAMES_DIR]
+    for folder in folders_to_clear:
+        if not os.path.exists(folder):
+            continue
+        for filename in os.listdir(folder):
+            file_path = os.path.join(folder, filename)
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+            except Exception as e:
+                app.logger.error(f'Falha ao remover {file_path}. Razão: {e}')
 
+
+# ------------------------ Image Processing Pipeline --------------------------
+def hex_to_bgr(hex_color):
+    hex_color = hex_color.lstrip('#')
+    h_len = len(hex_color)
+    return tuple(int(hex_color[i:i + h_len // 3], 16) for i in range(0, h_len, h_len // 3))[::-1]
+
+def apply_filter_and_drawing_pipeline(image_bytes, filters_array, annotations_array=[], scale=1):
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img_cv is None: return None
+
+    # Etapa 1: Aplicar filtros de imagem na imagem original
     for f in filters_array:
         if not f.get('enabled'): continue
-        
         name = f.get('name')
         if name == 'brightness_contrast':
-            alpha = 1.0 + (f.get('contrast', 0) / 100.0) # Contrast
-            beta = f.get('brightness', 0) # Brightness
-            img = cv2.convertScaleAbs(img, alpha=alpha, beta=beta)
-        
+            alpha, beta = 1.0 + (f.get('contrast', 0) / 100.0), f.get('brightness', 0)
+            img_cv = cv2.convertScaleAbs(img_cv, alpha=alpha, beta=beta)
         elif name == 'white_balance':
-            # Simple Gray World algorithm
-            result = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-            avg_a = np.average(result[:, :, 1])
-            avg_b = np.average(result[:, :, 2])
-            result[:, :, 1] = result[:, :, 1] - ((avg_a - 128) * (result[:, :, 0] / 255.0) * 1.1)
-            result[:, :, 2] = result[:, :, 2] - ((avg_b - 128) * (result[:, :, 0] / 255.0) * 1.1)
-            img = cv2.cvtColor(result, cv2.COLOR_LAB2BGR)
-
+            result = cv2.cvtColor(img_cv, cv2.COLOR_BGR2LAB)
+            avg_a, avg_b = np.average(result[:, :, 1]), np.average(result[:, :, 2])
+            result[:, :, 1] -= (avg_a - 128) * (result[:, :, 0] / 255.0) * 1.1
+            result[:, :, 2] -= (avg_b - 128) * (result[:, :, 0] / 255.0) * 1.1
+            img_cv = cv2.cvtColor(result, cv2.COLOR_LAB2BGR)
         elif name == 'clahe':
-            clip_limit = f.get('clipLimit', 2.0)
-            grid_size = f.get('gridSize', 8)
-            lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+            clip_limit, grid_size = f.get('clipLimit', 2.0), f.get('gridSize', 8)
+            lab = cv2.cvtColor(img_cv, cv2.COLOR_BGR2LAB)
             l, a, b = cv2.split(lab)
             clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(grid_size,grid_size))
             cl = clahe.apply(l)
             limg = cv2.merge((cl,a,b))
-            img = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+            img_cv = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+
+    # Etapa 2: Preparar o canvas de destino, reescalonando a imagem FILTRADA primeiro.
+    if scale > 1:
+        img_pil = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
+        new_width, new_height  = int(img_pil.width * scale), int(img_pil.height * scale)
+        resample_filter = getattr(Image, 'LANCZOS', getattr(Image.Resampling, 'LANCZOS', Image.BICUBIC))
+        img_pil_resized = img_pil.resize((new_width, new_height), resample=resample_filter)
+        canvas_cv = cv2.cvtColor(np.array(img_pil_resized), cv2.COLOR_RGB2BGR)
+    else:
+        canvas_cv = img_cv.copy()
+
+    # Etapa 3: Desenhar anotações, com coordenadas e tamanhos ESCALADOS, sobre o canvas final.
+    if annotations_array:
+        for ann in annotations_array:
+            color_bgr = hex_to_bgr(ann['color'])
             
-    _, img_encoded = cv2.imencode('.png', img)
+            if ann['type'] in ['line', 'rectangle']:
+                thickness = max(1, int(ann.get('thickness', 2) * scale))
+                start_point = tuple(map(int, [p * scale for p in ann['start']]))
+                end_point = tuple(map(int, [p * scale for p in ann['end']]))
+                if ann['type'] == 'line':
+                    cv2.line(canvas_cv, start_point, end_point, color_bgr, thickness)
+                elif ann['type'] == 'rectangle':
+                    cv2.rectangle(canvas_cv, start_point, end_point, color_bgr, thickness)
+
+            elif ann['type'] == 'text':
+                pos = tuple(map(int, [p * scale for p in ann['pos']]))
+                text = ann.get('text', '')
+                font_size_px = ann.get('fontSize', 20) * scale # Tamanho da fonte em pixels, escalado
+                font_scale = font_size_px / 25.0 # Converter para a escala relativa do OpenCV
+                font_thickness = max(1, int(font_size_px / 15))
+                cv2.putText(canvas_cv, text, pos, cv2.FONT_HERSHEY_SIMPLEX, font_scale, color_bgr, font_thickness, cv2.LINE_AA)
+
+    # Etapa Final: Codificar a imagem final para PNG
+    _, img_encoded = cv2.imencode('.png', canvas_cv)
     return img_encoded.tobytes()
+
 
 # ------------------------ Helpers -------------------------------------
 def extract_exact_frame(video_path: str, ts: float, out_path: str) -> None:
@@ -100,7 +148,7 @@ def extract_exact_frame(video_path: str, ts: float, out_path: str) -> None:
 # ----------------------------- Front-end Templates ------------------------
 HTML = """
 <!doctype html><html lang=pt><head><meta charset=utf-8>
-<title>Bardin Video Annotator v8.7</title>
+<title>Análise de Conteúdo (Vídeo)</title>
 <script src=https://cdn.tailwindcss.com></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
 <style>
@@ -110,10 +158,13 @@ HTML = """
   .panel.collapsed .panel-header { justify-content: center; border-bottom: none; }
   .filter-item { cursor: grab; }
   .filter-item:active { cursor: grabbing; }
+  #drawingCanvas { position: absolute; top: 0; left: 0; cursor: default; touch-action: none; }
+  .drawing-mode-active { background-color: #4f46e5 !important; color: white !important; }
+  .scale-btn-active { background-color: #3b82f6 !important; color: white !important; border-color: #1d4ed8 !important; }
 </style>
 </head>
 <body class="bg-gray-200 flex flex-col h-screen overflow-hidden">
-<header class="bg-indigo-700 text-white p-4 text-xl font-semibold flex-shrink-0 z-10">Bardin Video Annotator</header>
+<header class="bg-indigo-700 text-white p-4 text-xl font-semibold flex-shrink-0 z-10">Análise de Conteúdo (Vídeo)</header>
 <div id="mainLayout" class="flex-grow min-h-0">
   <div id="mainPanels" class="min-h-0">
     <aside id="leftPanel" class="panel flex flex-col bg-white shadow-lg">
@@ -126,7 +177,7 @@ HTML = """
         <div id=ctl class="hidden space-y-3">
           <button id="infoBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-1 rounded w-full text-sm disabled:opacity-50" disabled>Informações do arquivo</button>
           <span class="text-sm font-mono block pt-2" id=ts>t=0.000s</span>
-          <div class="space-x-1"><span class="text-sm mr-2">Velocidade:</span><button class=sBtn data-s=.25>0.25×</button><button class=sBtn data-s=.5>0.5×</button><button class=sBtn data-s=1>1×</button><button class=sBtn data-s=1.5>1.5×</button><button class=sBtn data-s=2>2×</button></div>
+                    <div class="space-x-1"><span class="text-sm mr-2">Velocidade:</span><button class=sBtn data-s=.5>0.5×</button><button class=sBtn data-s=1>1×</button><button class=sBtn data-s=2>2×</button><button class=sBtn data-s=3>3×</button><button class=sBtn data-s=5>5×</button></div>
           <div class="space-x-1"><span class="text-sm mr-2">Frame:</span><button id=prev class="px-2">◀</button><button id=next class="px-2">▶</button></div>
           <div class="space-y-1 pt-2">
             <label for="activeCategorySelect" class="text-sm font-medium">Categoria para Captura:</label>
@@ -183,7 +234,7 @@ HTML = """
   <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-3xl flex flex-col">
     <div class="flex justify-between items-center mb-4 flex-shrink-0">
       <h2 class="text-xl font-bold text-gray-800">Informações do Arquivo de Mídia</h2>
-      <button id="closeInfoModal" class="text-3xl text-gray-500 hover:text-gray-800">&times;</button>
+      <button id="closeInfoModal" class="text-3xl text-gray-500 hover:text-gray-800">×</button>
     </div>
     <pre id="infoContent" class="bg-gray-100 p-4 rounded text-sm overflow-auto flex-grow whitespace-pre-wrap" style="max-height: 65vh; min-height: 200px;"></pre>
     <div class="mt-4 flex justify-end gap-2 flex-shrink-0">
@@ -194,12 +245,51 @@ HTML = """
 </div>
 <div id="imageModal" class="fixed inset-0 bg-black/80 p-4 z-50 hidden items-center justify-center" onclick="if(event.target===this) this.style.display='none'">
   <div class="bg-white rounded-lg shadow-xl w-full max-w-6xl flex overflow-hidden" style="height: 90vh;">
-      <div class="flex-grow flex items-center justify-center bg-gray-800 p-2 relative"><img id="modalImage" src="" alt="Frame em tela cheia" class="max-w-full max-h-full object-contain"><div id="loadingIndicator" class="absolute text-white hidden">Processando...</div></div>
-      <div class="w-64 flex-shrink-0 p-4 border-l overflow-y-auto">
-          <h3 class="font-bold mb-4 text-gray-800">Ajustes de Imagem</h3>
-          <div id="filter-list" class="space-y-2"></div>
+      <div class="flex-grow flex flex-col items-center justify-center bg-gray-800 p-2 relative min-w-0">
+          <div class="w-full max-w-lg p-2 bg-gray-900/60 rounded-md mb-2 flex items-center space-x-3">
+              <label for="zoomSlider" class="text-white text-sm flex-shrink-0">Zoom: <span id="zoomValue">100</span>%</label>
+              <input type="range" id="zoomSlider" min="0.2" max="5" value="1" step="0.05" class="w-full">
+          </div>
+          <div id="image-viewport" class="w-full h-full overflow-auto border border-gray-700 bg-gray-900">
+              <div id="image-canvas-container" class="relative" style="width: 100px; height: 100px;">
+                  <img id="modalImage" src="" alt="Frame em tela cheia" class="absolute top-0 left-0 w-full h-full" style="image-rendering: pixelated;">
+                  <canvas id="drawingCanvas" class="absolute top-0 left-0"></canvas>
+              </div>
+          </div>
+          <div id="loadingIndicator" class="absolute text-white hidden">Processando...</div>
       </div>
-      <button id="closeImageModal" class="absolute top-2 right-2 text-white bg-black/50 rounded-full p-1 text-2xl leading-none">&times;</button>
+      <div class="w-80 flex-shrink-0 p-4 border-l overflow-y-auto flex flex-col">
+          <div class="flex-grow">
+              <h3 class="font-bold mb-2 text-gray-800">Ajustes de Imagem</h3>
+              <div id="filter-list" class="space-y-2"></div>
+              
+              <h3 class="font-bold mt-6 mb-2 text-gray-800 border-t pt-4">Reescalonamento</h3>
+              <div id="scale-controls" class="grid grid-cols-3 gap-2">
+                <button data-scale="1" class="scale-btn bg-gray-200 hover:bg-gray-300 border-b-2 border-gray-400 text-sm p-2 rounded">1x</button>
+                <button data-scale="2" class="scale-btn bg-gray-200 hover:bg-gray-300 border-b-2 border-gray-400 text-sm p-2 rounded">2x</button>
+                <button data-scale="3" class="scale-btn bg-gray-200 hover:bg-gray-300 border-b-2 border-gray-400 text-sm p-2 rounded">3x</button>
+              </div>
+
+              <h3 class="font-bold mt-6 mb-2 text-gray-800 border-t pt-4">Desenho</h3>
+              <div id="drawing-controls" class="space-y-3">
+                  <div class="grid grid-cols-3 gap-2">
+                      <button id="drawLineBtn" class="bg-gray-200 hover:bg-gray-300 text-sm p-2 rounded">Linha</button>
+                      <button id="drawRectBtn" class="bg-gray-200 hover:bg-gray-300 text-sm p-2 rounded">Retângulo</button>
+                      <button id="drawTextBtn" class="bg-gray-200 hover:bg-gray-300 text-sm p-2 rounded">Texto</button>
+                  </div>
+                  <div class="space-y-1">
+                      <label class="text-xs" for="drawColor">Cor</label>
+                      <input type="color" id="drawColor" value="#ff0000" class="w-full h-8 p-1 border rounded">
+                  </div>
+                  <div class="space-y-1">
+                      <label class="text-xs" for="drawThickness" id="thicknessLabel">Espessura: <span id="thicknessValue">2</span>px</label>
+                      <input type="range" id="drawThickness" min="1" max="100" value="2" class="w-full">
+                  </div>
+                   <button id="undoDrawBtn" class="w-full bg-amber-500 hover:bg-amber-600 text-white text-sm p-2 rounded mt-2">Voltar (Desfazer)</button>
+              </div>
+          </div>
+      </div>
+      <button id="closeImageModal" class="absolute top-2 right-2 text-white bg-black/50 rounded-full p-1 text-2xl leading-none">×</button>
   </div>
 </div>
 
@@ -208,7 +298,9 @@ HTML = """
 let vId=null, selCat=null, player=null, cats={}, allFrames = [], currentVideoFilename = null, videoFps = 30, currentModalFrameId = null;
 const $ = id => document.getElementById(id);
 const L_WIDTH = '320px', R_WIDTH = '320px', COLLAPSED_WIDTH = '48px';
-const speeds = [0.25, 0.5, 1.0, 1.5, 2.0];
+const speeds = [0.5, 1.0, 2.0, 3.0, 5.0];
+let currentViewZoom = 1.0; 
+let textToDraw = '';
 
 // LAYOUT LOGIC
 function updateGridLayout() { const isLeftCollapsed = $('leftPanel').classList.contains('collapsed'), isRightCollapsed = $('rightPanel').classList.contains('collapsed'); const col1 = isLeftCollapsed ? COLLAPSED_WIDTH : L_WIDTH, col3 = isRightCollapsed ? COLLAPSED_WIDTH : R_WIDTH; $('mainPanels').style.gridTemplateColumns = `${col1} 1fr ${col3}`; }
@@ -228,38 +320,23 @@ async function initData() {
 }
 function updateAllUI() { renderCategoryList(); populateCategoryFilter(); populateActiveCategorySelect(); renderGallery(); }
 
-// <<< MODIFICADO >>> Lógica de upload alterada para resetar categorias e permitir re-seleção do mesmo arquivo.
 $('videoFile').onchange=async e=>{
   const f=e.target.files[0]; if(!f) return;
-  
-  $('playerWrapper').innerHTML = '<p class="text-white">Reiniciando ambiente...</p>';
-  
-  // 1. Reseta as categorias no servidor para o estado padrão.
-  await fetch('/categories/reset', { method: 'POST' });
-
-  // 2. Envia o novo vídeo.
-  const fd=new FormData(); fd.append('video',f);
-  $('playerWrapper').innerHTML = '<p class="text-white">Enviando vídeo...</p>';
+  $('playerWrapper').innerHTML = '<p class="text-white">Enviando e processando vídeo...</p>';
+  const fd=new FormData(); 
+  fd.append('video',f);
   const {id, filename, fps}=await fetch('/upload',{method:'POST',body:fd}).then(r=>r.json());
-  
-  // 3. Configura o novo estado da sessão.
   vId=id;
   currentVideoFilename = filename;
   videoFps = fps || 30;
-  
-  // 4. Configura o player e a UI.
   $('playerWrapper').innerHTML = `<video id="player" src="/video/${vId}" controls autoplay class="w-full h-full"></video>`;
   player = $('player');
   player.ontimeupdate=()=>{ const frameNum = Math.floor(player.currentTime * videoFps) + 1; ts.textContent = `t=${player.currentTime.toFixed(3)}s (frame ${frameNum})`; };
   player.onratechange=()=> updateSpeedButtons(player.playbackRate);
   $('ctl').classList.remove('hidden');
   ['infoBtn', 'saveCatsBtn', 'saveGalleryBtn', 'loadGalleryBtn', 'expZip', 'expCsv'].forEach(id => $(id).disabled = false);
-  
-  // 5. Inicializa os dados (agora com categorias resetadas) e atualiza a UI.
   await initData();
   updateSpeedButtons(1.0);
-
-  // 6. Limpa o valor do input para permitir que o evento 'onchange' dispare novamente com o mesmo arquivo.
   e.target.value = null;
 };
 
@@ -397,27 +474,47 @@ $('copyInfoBtn').onclick = (e) => { navigator.clipboard.writeText($('infoContent
 $('saveInfoBtn').onclick = () => { const text = $('infoContent').textContent; const blob = new Blob([text], { type: 'text/plain' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; const baseName = currentVideoFilename.split('.').slice(0, -1).join('.'); a.download = `mediainfo_${baseName}.txt`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); };
 
 const imageModal = $('imageModal'), modalImage = $('modalImage'), loadingIndicator = $('loadingIndicator');
+const drawingCanvas = $('drawingCanvas'), drawingCtx = drawingCanvas.getContext('2d');
+let drawingMode = null, isDrawing = false, startPoint = {}, currentAnnotations = [];
+
+const zoomSlider = $('zoomSlider'), zoomValue = $('zoomValue'), imageCanvasContainer = $('image-canvas-container');
+
 $('closeImageModal').onclick = () => imageModal.style.display = 'none';
 
 function openImageModal(frameId) {
     currentModalFrameId = frameId;
     const frame = allFrames.find(f => f.id === frameId);
     if (!frame) return;
+    currentAnnotations = frame.annotations || [];
+    resetDrawingMode();
+    updateScaleButtonsUI(frame.scale || 1);
+    zoomSlider.value = 1;
+    zoomValue.textContent = "100";
+    currentViewZoom = 1;
     renderFilterControls(frame.filters);
     updateModalImage();
     imageModal.style.display = 'flex';
 }
+
 function updateModalImage() {
     const frame = allFrames.find(f => f.id === currentModalFrameId); if (!frame) return;
     const activeFilters = frame.filters.filter(f => f.enabled);
     loadingIndicator.style.display = 'block';
-    if (activeFilters.length > 0) {
-        const filtersQuery = encodeURIComponent(JSON.stringify(activeFilters));
-        modalImage.src = `/frame_image_processed/${frame.path}?filters=${filtersQuery}`;
-    } else {
-        modalImage.src = frame.img_url;
-    }
-    modalImage.onload = () => loadingIndicator.style.display = 'none';
+    const scale = frame.scale || 1;
+    const annotations = frame.annotations || [];
+    const filtersQuery = encodeURIComponent(JSON.stringify(activeFilters));
+    const annotationsQuery = encodeURIComponent(JSON.stringify(annotations));
+    let imageUrl = `/frame_image_processed/${frame.path}?filters=${filtersQuery}&annotations=${annotationsQuery}&scale=${scale}`;
+    const separator = imageUrl.includes('?') ? '&' : '?';
+    modalImage.src = `${imageUrl}${separator}t=${new Date().getTime()}`;
+    modalImage.onload = () => {
+        loadingIndicator.style.display = 'none';
+        applyViewZoom();
+    };
+    modalImage.onerror = () => {
+        loadingIndicator.style.display = 'none';
+        console.error("Falha ao carregar a imagem:", modalImage.src);
+    };
 }
 
 // FILTER LOGIC
@@ -450,7 +547,7 @@ function renderFilterControls(filters) {
     new Sortable(container, {
         animation: 150,
         handle: '.cursor-grab',
-        onEnd: () => applyFilters(true) // Pass true to indicate reorder
+        onEnd: () => applyFilters(true)
     });
 }
 async function applyFilters(isReorder = false) {
@@ -481,6 +578,188 @@ async function applyFilters(isReorder = false) {
     updateModalImage();
 }
 
+// LÓGICA DE REESCALONAMENTO (PERSISTENTE)
+function updateScaleButtonsUI(activeScale) {
+    document.querySelectorAll('#scale-controls .scale-btn').forEach(btn => {
+        if (parseInt(btn.dataset.scale) === activeScale) { btn.classList.add('scale-btn-active'); }
+        else { btn.classList.remove('scale-btn-active'); }
+    });
+}
+document.getElementById('scale-controls').addEventListener('click', async (e) => {
+    if (e.target.matches('.scale-btn')) {
+        const newScale = parseInt(e.target.dataset.scale);
+        const frame = allFrames.find(f => f.id === currentModalFrameId);
+        if (frame) {
+            frame.scale = newScale;
+            updateScaleButtonsUI(newScale);
+            try {
+                await fetch(`/frame/${currentModalFrameId}/scale`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ scale: newScale })
+                });
+            } catch (err) { console.error("Falha ao salvar a escala:", err); }
+            updateModalImage();
+        }
+    }
+});
+
+// LÓGICA DE ZOOM DE VISUALIZAÇÃO
+zoomSlider.oninput = (e) => {
+    currentViewZoom = parseFloat(e.target.value);
+    zoomValue.textContent = Math.round(currentViewZoom * 100);
+    applyViewZoom();
+};
+function applyViewZoom() {
+    if (!modalImage.naturalWidth) return;
+    const naturalW = modalImage.naturalWidth;
+    const naturalH = modalImage.naturalHeight;
+    const zoomedW = naturalW * currentViewZoom;
+    const zoomedH = naturalH * currentViewZoom;
+    imageCanvasContainer.style.width = `${zoomedW}px`;
+    imageCanvasContainer.style.height = `${zoomedH}px`;
+    drawingCanvas.width = zoomedW;
+    drawingCanvas.height = zoomedH;
+}
+
+// LÓGICA DE DESENHO
+function getMousePos(evt) {
+    const rect = drawingCanvas.getBoundingClientRect();
+    const scaleX = drawingCanvas.width / rect.width;
+    const scaleY = drawingCanvas.height / rect.height;
+    return {
+      x: (evt.clientX - rect.left) * scaleX,
+      y: (evt.clientY - rect.top) * scaleY
+    };
+}
+function setThicknessLabel(isTextMode) {
+    const label = $('thicknessLabel');
+    const valueSpan = $('thicknessValue');
+    const slider = $('drawThickness');
+    if (isTextMode) {
+        label.childNodes[0].nodeValue = "Tamanho da Fonte: ";
+        slider.min = "10";
+        slider.max = "100";
+        slider.value = slider.value < 10 ? "20" : slider.value;
+    } else {
+        label.childNodes[0].nodeValue = "Espessura: ";
+        slider.min = "1";
+        slider.max = "20";
+        slider.value = slider.value > 20 ? "2" : slider.value;
+    }
+    valueSpan.textContent = slider.value;
+}
+function resetDrawingMode(){
+    drawingMode = null;
+    isDrawing = false;
+    textToDraw = '';
+    drawingCanvas.style.cursor = 'default';
+    $('drawLineBtn').classList.remove('drawing-mode-active');
+    $('drawRectBtn').classList.remove('drawing-mode-active');
+    $('drawTextBtn').classList.remove('drawing-mode-active');
+    setThicknessLabel(false);
+}
+async function saveAnnotations() {
+    const frame = allFrames.find(f => f.id === currentModalFrameId);
+    if (frame) {
+        frame.annotations = currentAnnotations;
+        try {
+            await fetch(`/frame/${currentModalFrameId}/annotations`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(currentAnnotations)
+            });
+        } catch (err) { console.error("Falha ao salvar anotações:", err); }
+    }
+}
+
+$('drawLineBtn').onclick = () => { resetDrawingMode(); drawingMode = 'line'; drawingCanvas.style.cursor = 'crosshair'; $('drawLineBtn').classList.add('drawing-mode-active'); };
+$('drawRectBtn').onclick = () => { resetDrawingMode(); drawingMode = 'rectangle'; drawingCanvas.style.cursor = 'crosshair'; $('drawRectBtn').classList.add('drawing-mode-active'); };
+$('drawTextBtn').onclick = () => {
+    resetDrawingMode();
+    const text = prompt("Digite o texto que deseja inserir:", "");
+    if (text) {
+        drawingMode = 'text';
+        textToDraw = text;
+        drawingCanvas.style.cursor = 'text';
+        $('drawTextBtn').classList.add('drawing-mode-active');
+        setThicknessLabel(true);
+    }
+};
+
+$('drawThickness').oninput = (e) => { $('thicknessValue').textContent = e.target.value; };
+$('undoDrawBtn').onclick = async () => {
+    if (currentAnnotations.length > 0) {
+        currentAnnotations.pop();
+        await saveAnnotations();
+        updateModalImage(); 
+    }
+};
+
+drawingCanvas.onmousedown = async (e) => {
+    if (!drawingMode) return;
+    if (drawingMode === 'text') {
+        const pos = getMousePos(e);
+        const frame = allFrames.find(f => f.id === currentModalFrameId);
+        const baseScale = frame.scale || 1;
+        // MODIFICADO: Coordenadas são normalizadas pelo zoom E pelo reescalonamento persistente.
+        currentAnnotations.push({
+            type: 'text', text: textToDraw,
+            pos: [pos.x / currentViewZoom / baseScale, pos.y / currentViewZoom / baseScale],
+            color: $('drawColor').value,
+            fontSize: parseInt($('drawThickness').value)
+        });
+        await saveAnnotations();
+        updateModalImage();
+        resetDrawingMode();
+    } else {
+        isDrawing = true;
+        startPoint = getMousePos(e);
+    }
+};
+
+drawingCanvas.onmousemove = (e) => {
+    if (!isDrawing || !drawingMode || drawingMode === 'text') return;
+    const currentPos = getMousePos(e);
+    drawingCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+    drawingCtx.strokeStyle = $('drawColor').value;
+    drawingCtx.lineWidth = $('drawThickness').value * currentViewZoom;
+    drawingCtx.beginPath();
+    if (drawingMode === 'line') {
+        drawingCtx.moveTo(startPoint.x, startPoint.y);
+        drawingCtx.lineTo(currentPos.x, currentPos.y);
+    } else if (drawingMode === 'rectangle') {
+        drawingCtx.rect(startPoint.x, startPoint.y, currentPos.x - startPoint.x, currentPos.y - startPoint.y);
+    }
+    drawingCtx.stroke();
+};
+drawingCanvas.onmouseup = async (e) => {
+    if (!isDrawing || !drawingMode || drawingMode === 'text') return;
+    isDrawing = false;
+    drawingCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+    const endPoint = getMousePos(e);
+    const frame = allFrames.find(f => f.id === currentModalFrameId);
+    const baseScale = frame.scale || 1;
+    // MODIFICADO: Coordenadas são normalizadas pelo zoom E pelo reescalonamento persistente.
+    currentAnnotations.push({
+        type: drawingMode,
+        start: [startPoint.x / currentViewZoom / baseScale, startPoint.y / currentViewZoom / baseScale],
+        end: [endPoint.x / currentViewZoom / baseScale, endPoint.y / currentViewZoom / baseScale],
+        color: $('drawColor').value,
+        thickness: parseFloat($('drawThickness').value)
+    });
+    await saveAnnotations();
+    updateModalImage();
+    resetDrawingMode();
+};
+drawingCanvas.onmouseleave = () => { 
+    if (isDrawing) {
+        isDrawing = false;
+        drawingCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+        resetDrawingMode();
+    } 
+};
+
 // KEYBOARD SHORTCUTS
 document.addEventListener('keydown', (e) => {
     const activeEl = document.activeElement;
@@ -493,8 +772,8 @@ document.addEventListener('keydown', (e) => {
         case 'arrowleft': prev.click(); break;
         case ' ': if (player.paused) player.play(); else player.pause(); break;
         case 'enter': cap.click(); break;
-        case 'l': let u = speeds.indexOf(player.playbackRate); if (u < 0) u = 2; if (u < speeds.length - 1) player.playbackRate = speeds[u + 1]; break;
-        case 'j': let d = speeds.indexOf(player.playbackRate); if (d < 0) d = 2; if (d > 0) player.playbackRate = speeds[d - 1]; break;
+        case 'l': let u = speeds.indexOf(player.playbackRate); if (u < 0) u = 1; if (u < speeds.length - 1) player.playbackRate = speeds[u + 1]; break;
+        case 'j': let d = speeds.indexOf(player.playbackRate); if (d < 0) d = 1; if (d > 0) player.playbackRate = speeds[d - 1]; break;
         case 'k': player.pause(); player.playbackRate = 1.0; break;
         default: preventDefault = false; break;
     }
@@ -576,22 +855,11 @@ def import_categories():
         return jsonify({"imported": imported_count, "skipped": skipped_count})
     except Exception as e: return jsonify({"error": f"Falha ao processar: {e}"}), 500
 
-# <<< ADICIONADO >>> Rota para resetar as categorias para o estado padrão.
-@app.route("/categories/reset", methods=["POST"])
-def reset_categories():
-    try:
-        default_cats = [get_default_category()]
-        save_categories_to_file(default_cats)
-        return jsonify(default_cats)
-    except Exception as e:
-        app.logger.error(f"Falha ao resetar categorias: {e}")
-        return jsonify({"error": "Não foi possível resetar as categorias."}), 500
-
 @app.route("/gallery/export/<vid>")
 def export_gallery(vid):
     if vid not in VIDEOS_SESSIONS: return "Vídeo não encontrado", 404
     frames, cats_map = FRAMES_BY_VIDEO.get(vid, []), {c['id']: c for c in load_categories_from_file()}
-    gallery_data = [{"ts": f["ts"], "cat_name": cats_map.get(f["cat_id"], {}).get("name"), "note": f["note"], "filters": f.get("filters", [])} for f in frames]
+    gallery_data = [{"ts": f["ts"], "cat_name": cats_map.get(f["cat_id"], {}).get("name"), "note": f["note"], "filters": f.get("filters", []), "annotations": f.get("annotations", []), "scale": f.get("scale", 1)} for f in frames]
     buffer = io.BytesIO(json.dumps(gallery_data, indent=2).encode('utf-8'))
     buffer.seek(0)
     original_name = "_".join(os.path.splitext(os.path.basename(VIDEOS_SESSIONS[vid]['filename']))[0].split('_')[1:])
@@ -612,13 +880,14 @@ def import_gallery(vid):
         video_info, original_user_filename = VIDEOS_SESSIONS[vid], "_".join(os.path.splitext(os.path.basename(VIDEOS_SESSIONS[vid]['filename']))[0].split('_')[1:])
         imported_frames = []
         for idx, frame_info in enumerate(data):
-            ts, note, cat_name, filters = frame_info.get("ts"), frame_info.get("note", ""), frame_info.get("cat_name"), frame_info.get("filters", [])
+            ts = frame_info.get("ts")
             if ts is None: continue
+            note, cat_name, filters, annotations, scale = frame_info.get("note", ""), frame_info.get("cat_name"), frame_info.get("filters", []), frame_info.get("annotations", []), frame_info.get("scale", 1)
             category = cats_by_name.get(cat_name, default_cat)
             frame_filename = f"{original_user_filename}_frame{idx + 1}_ts{f'{ts:.3f}'.replace('.', '_')}.png"
             fpath = os.path.join(FRAMES_DIR, frame_filename)
             extract_exact_frame(video_info['filepath'], ts, fpath)
-            new_frame = {"id": uuid.uuid4().hex, "video_id": vid, "cat_id": category['id'], "ts": ts, "path": frame_filename, "fpath": fpath, "note": note, "filters": filters, "img_url": url_for('serve_frame_image_by_path', frame_path=frame_filename)}
+            new_frame = {"id": uuid.uuid4().hex, "video_id": vid, "cat_id": category['id'], "ts": ts, "path": frame_filename, "fpath": fpath, "note": note, "filters": filters, "annotations": annotations, "scale": scale, "img_url": url_for('serve_frame_image_by_path', frame_path=frame_filename)}
             imported_frames.append(new_frame)
         FRAMES_BY_VIDEO[vid] = imported_frames
         return jsonify({"imported": len(imported_frames)})
@@ -626,15 +895,18 @@ def import_gallery(vid):
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    f = request.files.get('video');
+    clear_data_folders()
+    VIDEOS_SESSIONS.clear()
+    FRAMES_BY_VIDEO.clear()
+    f = request.files.get('video')
     if not f or not f.filename: return jsonify({"error": "No file"}), 400
     vid, filepath = uuid.uuid4().hex, os.path.join(VIDEOS_DIR, f"{uuid.uuid4().hex}_{f.filename}")
     f.save(filepath)
     fps = 30.0
     try:
         with av.open(filepath) as container:
-            stream = container.streams.video[0]
-            if stream.average_rate: fps = float(stream.average_rate)
+            if stream := container.streams.video[0]:
+                if stream.average_rate: fps = float(stream.average_rate)
     except Exception as e: app.logger.error(f"Não foi possível determinar o FPS para {filepath}: {e}")
     VIDEOS_SESSIONS[vid] = {'id': vid, 'filename': f.filename, 'filepath': filepath, 'fps': fps}
     FRAMES_BY_VIDEO[vid] = []
@@ -651,7 +923,6 @@ def save_frame():
     if vid not in VIDEOS_SESSIONS: return "Vídeo não encontrado", 404
     category = next((c for c in load_categories_from_file() if c['id'] == cid), get_default_category())
     frame_num = len(FRAMES_BY_VIDEO.get(vid, [])) + 1
-    default_note = f"Frame: {frame_num}, Tempo: {ts:.3f}s"
     video_info = VIDEOS_SESSIONS[vid]
     original_user_filename = "_".join(os.path.splitext(os.path.basename(video_info['filename']))[0].split('_')[1:])
     frame_filename = f"{original_user_filename}_frame{frame_num}_ts{f'{ts:.3f}'.replace('.', '_')}.png"
@@ -662,7 +933,7 @@ def save_frame():
         {"name": "clahe", "label": "CLAHE", "enabled": False, "clipLimit": 2.0, "gridSize": 8},
         {"name": "white_balance", "label": "Balanço de Branco", "enabled": False}
     ]
-    new_frame = {"id": uuid.uuid4().hex, "video_id": vid, "cat_id": category['id'], "ts": ts, "path": frame_filename, "fpath": fpath, "note": default_note, "filters": default_filters, "cat_name": category['name'], "img_url": url_for('serve_frame_image_by_path', frame_path=frame_filename)}
+    new_frame = {"id": uuid.uuid4().hex, "video_id": vid, "cat_id": category['id'], "ts": ts, "path": frame_filename, "fpath": fpath, "note": f"Frame: {frame_num}, Tempo: {ts:.3f}s", "filters": default_filters, "annotations": [], "scale": 1, "cat_name": category['name'], "img_url": url_for('serve_frame_image_by_path', frame_path=frame_filename)}
     FRAMES_BY_VIDEO.setdefault(vid, []).append(new_frame)
     return jsonify(new_frame)
 
@@ -670,15 +941,14 @@ def save_frame():
 def update_note(fid):
     new_note = request.get_json().get("note", "")
     for frames in FRAMES_BY_VIDEO.values():
-        for frame in frames:
-            if frame['id'] == fid: frame['note'] = new_note; return jsonify({"ok": True})
+        if frame := next((f for f in frames if f['id'] == fid), None):
+            frame['note'] = new_note; return jsonify({"ok": True})
     return "Frame não encontrado", 404
 
 @app.route("/frame/<fid>", methods=["DELETE"])
 def delete_frame(fid):
     for vid, frames in FRAMES_BY_VIDEO.items():
-        frame_to_delete = next((f for f in frames if f['id'] == fid), None)
-        if frame_to_delete:
+        if frame_to_delete := next((f for f in frames if f['id'] == fid), None):
             if os.path.exists(frame_to_delete['fpath']): os.remove(frame_to_delete['fpath'])
             FRAMES_BY_VIDEO[vid] = [f for f in frames if f['id'] != fid]
             return jsonify({"ok": True})
@@ -695,12 +965,14 @@ def serve_processed_frame_image(frame_path):
     fpath = os.path.join(FRAMES_DIR, frame_path)
     if not os.path.exists(fpath): return "Arquivo não encontrado", 404
     try:
-        filters_json = request.args.get('filters', '[]')
-        filters_array = json.loads(filters_json)
-        if not filters_array: return send_file(fpath)
+        filters_json, annotations_json = request.args.get('filters', '[]'), request.args.get('annotations', '[]')
+        scale = int(float(request.args.get('scale', '1')))
+        filters_array, annotations_array = json.loads(filters_json), json.loads(annotations_json)
+        if not filters_array and not annotations_array and scale == 1:
+            return send_file(fpath)
         with open(fpath, "rb") as f:
             img_bytes = f.read()
-        processed_bytes = apply_filter_pipeline(img_bytes, filters_array)
+        processed_bytes = apply_filter_and_drawing_pipeline(img_bytes, filters_array, annotations_array, scale)
         if processed_bytes is None: return "Falha ao processar imagem", 500
         return send_file(io.BytesIO(processed_bytes), mimetype='image/png')
     except Exception as e:
@@ -715,20 +987,40 @@ def change_frame_category(fid):
     new_cat_id = request.get_json().get('new_cat_id')
     if not any(c['id'] == new_cat_id for c in load_categories_from_file()): return "Categoria não encontrada", 404
     for frames in FRAMES_BY_VIDEO.values():
-        for frame in frames:
-            if frame['id'] == fid: frame['cat_id'] = new_cat_id; return jsonify({"ok": True})
+        if frame := next((f for f in frames if f['id'] == fid), None):
+            frame['cat_id'] = new_cat_id
+            return jsonify({"ok": True})
     return "Frame não encontrado", 404
 
 @app.route("/frame/<fid>/filters", methods=["PUT"])
 def update_frame_filters(fid):
     filters_data = request.get_json()
-    if not isinstance(filters_data, list):
-        return jsonify({"error": "Dados de filtro inválidos."}), 400
+    if not isinstance(filters_data, list): return jsonify({"error": "Dados de filtro inválidos."}), 400
     for frames in FRAMES_BY_VIDEO.values():
-        for frame in frames:
-            if frame['id'] == fid:
-                frame['filters'] = filters_data
-                return jsonify({"ok": True})
+        if frame := next((f for f in frames if f['id'] == fid), None):
+            frame['filters'] = filters_data
+            return jsonify({"ok": True})
+    return "Frame não encontrado", 404
+
+@app.route("/frame/<fid>/annotations", methods=["PUT"])
+def update_frame_annotations(fid):
+    annotations_data = request.get_json()
+    if not isinstance(annotations_data, list): return jsonify({"error": "Dados de anotação inválidos."}), 400
+    for frames in FRAMES_BY_VIDEO.values():
+        if frame := next((f for f in frames if f['id'] == fid), None):
+            frame['annotations'] = annotations_data
+            return jsonify({"ok": True})
+    return "Frame não encontrado", 404
+
+@app.route("/frame/<fid>/scale", methods=["PUT"])
+def update_frame_scale(fid):
+    data = request.get_json()
+    new_scale = data.get("scale")
+    if new_scale not in [1, 2, 3]: return jsonify({"error": "Valor de escala inválido."}), 400
+    for frames in FRAMES_BY_VIDEO.values():
+        if frame := next((f for f in frames if f['id'] == fid), None):
+            frame['scale'] = new_scale
+            return jsonify({"ok": True})
     return "Frame não encontrado", 404
 
 @app.route("/export/zip/<vid>")
@@ -743,12 +1035,12 @@ def export_zip(vid):
             if not os.path.exists(r['fpath']): continue
             cat_name = cats_map.get(r['cat_id'], {}).get("name", "sem_categoria")
             arcname = os.path.join(cat_name, r['path'])
-            active_filters = [f for f in r.get('filters', []) if f.get('enabled')]
-            if active_filters:
+            active_filters, annotations, scale = [f for f in r.get('filters', []) if f.get('enabled')], r.get('annotations', []), r.get('scale', 1)
+            if active_filters or annotations or scale > 1:
                 try:
                     with open(r['fpath'], "rb") as f:
                         img_bytes = f.read()
-                    processed_bytes = apply_filter_pipeline(img_bytes, active_filters)
+                    processed_bytes = apply_filter_and_drawing_pipeline(img_bytes, active_filters, annotations, scale)
                     if processed_bytes: zf.writestr(arcname, processed_bytes)
                 except Exception as e:
                     app.logger.error(f"Falha ao processar e adicionar o frame {r['path']} ao zip: {e}")
