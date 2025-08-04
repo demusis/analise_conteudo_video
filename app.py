@@ -76,12 +76,30 @@ def apply_filter_and_drawing_pipeline(image_bytes, filters_array, annotations_ar
         if name == 'brightness_contrast':
             alpha, beta = 1.0 + (f.get('contrast', 0) / 100.0), f.get('brightness', 0)
             img_cv = cv2.convertScaleAbs(img_cv, alpha=alpha, beta=beta)
+            
         elif name == 'white_balance':
-            result = cv2.cvtColor(img_cv, cv2.COLOR_BGR2LAB)
-            avg_a, avg_b = np.average(result[:, :, 1]), np.average(result[:, :, 2])
-            result[:, :, 1] -= (avg_a - 128) * (result[:, :, 0] / 255.0) * 1.1
-            result[:, :, 2] -= (avg_b - 128) * (result[:, :, 0] / 255.0) * 1.1
-            img_cv = cv2.cvtColor(result, cv2.COLOR_LAB2BGR)
+            lab_img = cv2.cvtColor(img_cv, cv2.COLOR_BGR2LAB)
+            l_channel, a_channel, b_channel = cv2.split(lab_img)
+            
+            avg_a = np.average(a_channel)
+            avg_b = np.average(b_channel)
+            
+            l_float = l_channel.astype(np.float32)
+            a_float = a_channel.astype(np.float32)
+            b_float = b_channel.astype(np.float32)
+
+            a_float -= (avg_a - 128) * (l_float / 255.0) * 1.1
+            b_float -= (avg_b - 128) * (l_float / 255.0) * 1.1
+
+            a_corrected = np.clip(a_float, 0, 255)
+            b_corrected = np.clip(b_float, 0, 255)
+
+            a_final = a_corrected.astype(np.uint8)
+            b_final = b_corrected.astype(np.uint8)
+            
+            corrected_lab = cv2.merge((l_channel, a_final, b_final))
+            img_cv = cv2.cvtColor(corrected_lab, cv2.COLOR_LAB2BGR)
+
         elif name == 'clahe':
             clip_limit, grid_size = f.get('clipLimit', 2.0), f.get('gridSize', 8)
             lab = cv2.cvtColor(img_cv, cv2.COLOR_BGR2LAB)
@@ -130,20 +148,39 @@ def apply_filter_and_drawing_pipeline(image_bytes, filters_array, annotations_ar
 
 # ------------------------ Helpers -------------------------------------
 def extract_exact_frame(video_path: str, ts: float, out_path: str) -> None:
+    container = None
     try:
         container = av.open(video_path)
-        vstream    = container.streams.video[0]
+        vstream = container.streams.video[0]
+        
+        duration_secs = float(vstream.duration * vstream.time_base)
+        if ts > duration_secs:
+            ts = duration_secs
+
         pts = int(ts / vstream.time_base)
         container.seek(pts, any_frame=False, stream=vstream, backward=True)
-        for frm in container.decode(vstream):
-            if frm.pts >= pts:
-                img: Image.Image = frm.to_image()
+        
+        last_decoded_frame = None
+        for frame in container.decode(vstream):
+            last_decoded_frame = frame
+            if frame.pts >= pts:
+                img: Image.Image = frame.to_image()
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)
                 img.save(out_path)
-                break
+                container.close()
+                return
+
+        if last_decoded_frame is not None:
+            img: Image.Image = last_decoded_frame.to_image()
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            img.save(out_path)
+
+    except Exception as e:
+        app.logger.error(f"Falha ao extrair frame de {video_path} no tempo {ts}: {e}")
     finally:
-        if 'container' in locals() and container:
+        if container:
             container.close()
+
 
 # ----------------------------- Front-end Templates ------------------------
 HTML = """
@@ -161,6 +198,15 @@ HTML = """
   #drawingCanvas { position: absolute; top: 0; left: 0; cursor: default; touch-action: none; }
   .drawing-mode-active { background-color: #4f46e5 !important; color: white !important; }
   .scale-btn-active { background-color: #3b82f6 !important; color: white !important; border-color: #1d4ed8 !important; }
+
+  #playerWrapper {
+    position: relative; 
+    z-index: 1;         
+  }
+  #bottomPanel {
+    position: relative; 
+    z-index: 10;        
+  }
 </style>
 </head>
 <body class="bg-gray-200 flex flex-col h-screen overflow-hidden">
@@ -333,6 +379,7 @@ $('videoFile').onchange=async e=>{
   player = $('player');
   player.ontimeupdate=()=>{ const frameNum = Math.floor(player.currentTime * videoFps) + 1; ts.textContent = `t=${player.currentTime.toFixed(3)}s (frame ${frameNum})`; };
   player.onratechange=()=> updateSpeedButtons(player.playbackRate);
+
   $('ctl').classList.remove('hidden');
   ['infoBtn', 'saveCatsBtn', 'saveGalleryBtn', 'loadGalleryBtn', 'expZip', 'expCsv'].forEach(id => $(id).disabled = false);
   await initData();
@@ -702,7 +749,6 @@ drawingCanvas.onmousedown = async (e) => {
         const pos = getMousePos(e);
         const frame = allFrames.find(f => f.id === currentModalFrameId);
         const baseScale = frame.scale || 1;
-        // MODIFICADO: Coordenadas são normalizadas pelo zoom E pelo reescalonamento persistente.
         currentAnnotations.push({
             type: 'text', text: textToDraw,
             pos: [pos.x / currentViewZoom / baseScale, pos.y / currentViewZoom / baseScale],
@@ -740,7 +786,6 @@ drawingCanvas.onmouseup = async (e) => {
     const endPoint = getMousePos(e);
     const frame = allFrames.find(f => f.id === currentModalFrameId);
     const baseScale = frame.scale || 1;
-    // MODIFICADO: Coordenadas são normalizadas pelo zoom E pelo reescalonamento persistente.
     currentAnnotations.push({
         type: drawingMode,
         start: [startPoint.x / currentViewZoom / baseScale, startPoint.y / currentViewZoom / baseScale],
@@ -762,6 +807,9 @@ drawingCanvas.onmouseleave = () => {
 
 // KEYBOARD SHORTCUTS
 document.addEventListener('keydown', (e) => {
+    // Ignora eventos de repetição para evitar múltiplos saltos de frame.
+    if (e.repeat) return;
+
     const activeEl = document.activeElement;
     if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) return;
     if (infoModal.style.display === 'flex' || imageModal.style.display === 'flex') return;
@@ -770,11 +818,13 @@ document.addEventListener('keydown', (e) => {
     switch(e.key.toLowerCase()) {
         case 'arrowright': next.click(); break;
         case 'arrowleft': prev.click(); break;
-        case ' ': if (player.paused) player.play(); else player.pause(); break;
         case 'enter': cap.click(); break;
         case 'l': let u = speeds.indexOf(player.playbackRate); if (u < 0) u = 1; if (u < speeds.length - 1) player.playbackRate = speeds[u + 1]; break;
         case 'j': let d = speeds.indexOf(player.playbackRate); if (d < 0) d = 1; if (d > 0) player.playbackRate = speeds[d - 1]; break;
-        case 'k': player.pause(); player.playbackRate = 1.0; break;
+        case 'k': // 'k' agora é o atalho para play/pause
+            if (player.paused) player.play();
+            else player.pause();
+            break;
         default: preventDefault = false; break;
     }
     if (preventDefault) e.preventDefault();
@@ -878,6 +928,7 @@ def import_gallery(vid):
         data, cats_by_name, default_cat = json.load(file.stream), {c['name']: c for c in load_categories_from_file()}, get_default_category()
         if not isinstance(data, list): return jsonify({"error": "JSON deve ser uma lista."}), 400
         video_info, original_user_filename = VIDEOS_SESSIONS[vid], "_".join(os.path.splitext(os.path.basename(VIDEOS_SESSIONS[vid]['filename']))[0].split('_')[1:])
+        video_fps = video_info.get('fps', 30.0) # Pega o FPS para usar no import
         imported_frames = []
         for idx, frame_info in enumerate(data):
             ts = frame_info.get("ts")
@@ -887,7 +938,13 @@ def import_gallery(vid):
             frame_filename = f"{original_user_filename}_frame{idx + 1}_ts{f'{ts:.3f}'.replace('.', '_')}.png"
             fpath = os.path.join(FRAMES_DIR, frame_filename)
             extract_exact_frame(video_info['filepath'], ts, fpath)
-            new_frame = {"id": uuid.uuid4().hex, "video_id": vid, "cat_id": category['id'], "ts": ts, "path": frame_filename, "fpath": fpath, "note": note, "filters": filters, "annotations": annotations, "scale": scale, "img_url": url_for('serve_frame_image_by_path', frame_path=frame_filename)}
+            video_frame_number = int(ts * video_fps) + 1 # Calcula o número do frame do vídeo
+            new_frame = {
+                "id": uuid.uuid4().hex, "video_id": vid, "cat_id": category['id'], "ts": ts, "path": frame_filename, 
+                "fpath": fpath, "note": note, "filters": filters, "annotations": annotations, "scale": scale, 
+                "video_frame_num": video_frame_number, # Salva o número do frame
+                "img_url": url_for('serve_frame_image_by_path', frame_path=frame_filename)
+            }
             imported_frames.append(new_frame)
         FRAMES_BY_VIDEO[vid] = imported_frames
         return jsonify({"imported": len(imported_frames)})
@@ -922,10 +979,15 @@ def save_frame():
     d = request.get_json(); vid, ts, cid = d['video_id'], float(d['ts']), d.get('cat_id')
     if vid not in VIDEOS_SESSIONS: return "Vídeo não encontrado", 404
     category = next((c for c in load_categories_from_file() if c['id'] == cid), get_default_category())
-    frame_num = len(FRAMES_BY_VIDEO.get(vid, [])) + 1
+    frame_count = len(FRAMES_BY_VIDEO.get(vid, [])) + 1
     video_info = VIDEOS_SESSIONS[vid]
+    
+    video_fps = video_info.get('fps', 30.0)
+    video_frame_number = int(ts * video_fps) + 1
+    default_note = f"Frame (vídeo): {video_frame_number}, Tempo: {ts:.3f}s"
+    
     original_user_filename = "_".join(os.path.splitext(os.path.basename(video_info['filename']))[0].split('_')[1:])
-    frame_filename = f"{original_user_filename}_frame{frame_num}_ts{f'{ts:.3f}'.replace('.', '_')}.png"
+    frame_filename = f"{original_user_filename}_frame{frame_count}_ts{f'{ts:.3f}'.replace('.', '_')}.png"
     fpath = os.path.join(FRAMES_DIR, frame_filename)
     extract_exact_frame(video_info['filepath'], ts, fpath)
     default_filters = [
@@ -933,7 +995,13 @@ def save_frame():
         {"name": "clahe", "label": "CLAHE", "enabled": False, "clipLimit": 2.0, "gridSize": 8},
         {"name": "white_balance", "label": "Balanço de Branco", "enabled": False}
     ]
-    new_frame = {"id": uuid.uuid4().hex, "video_id": vid, "cat_id": category['id'], "ts": ts, "path": frame_filename, "fpath": fpath, "note": f"Frame: {frame_num}, Tempo: {ts:.3f}s", "filters": default_filters, "annotations": [], "scale": 1, "cat_name": category['name'], "img_url": url_for('serve_frame_image_by_path', frame_path=frame_filename)}
+    new_frame = {
+        "id": uuid.uuid4().hex, "video_id": vid, "cat_id": category['id'], "ts": ts, 
+        "path": frame_filename, "fpath": fpath, "note": default_note, "filters": default_filters, 
+        "annotations": [], "scale": 1, "cat_name": category['name'], 
+        "video_frame_num": video_frame_number,
+        "img_url": url_for('serve_frame_image_by_path', frame_path=frame_filename)
+    }
     FRAMES_BY_VIDEO.setdefault(vid, []).append(new_frame)
     return jsonify(new_frame)
 
@@ -1033,8 +1101,15 @@ def export_zip(vid):
     with ZipFile(buf, 'w', ZIP_DEFLATED) as zf:
         for r in frames:
             if not os.path.exists(r['fpath']): continue
+            
             cat_name = cats_map.get(r['cat_id'], {}).get("name", "sem_categoria")
-            arcname = os.path.join(cat_name, r['path'])
+            ts_str = f"{r['ts']:.3f}".replace('.', '_')
+            
+            frame_num_for_filename = r.get('video_frame_num', 'ID' + r['id'][:6])
+            
+            new_filename = f"{original_name}_frame{frame_num_for_filename}_ts{ts_str}.png"
+            arcname = os.path.join(cat_name, new_filename)
+
             active_filters, annotations, scale = [f for f in r.get('filters', []) if f.get('enabled')], r.get('annotations', []), r.get('scale', 1)
             if active_filters or annotations or scale > 1:
                 try:
@@ -1049,15 +1124,53 @@ def export_zip(vid):
     buf.seek(0)
     return send_file(buf, download_name=f"imagens_{original_name}.zip", as_attachment=True)
 
+# --- Início do Código Corrigido ---
 @app.route("/export/csv/<vid>")
 def export_csv(vid):
     if vid not in VIDEOS_SESSIONS: return "Vídeo não encontrado", 404
     video_info, frames = VIDEOS_SESSIONS[vid], FRAMES_BY_VIDEO.get(vid, [])
     cats_map = {c['id']: c for c in load_categories_from_file()}
     original_name = "_".join(os.path.splitext(os.path.basename(video_info['filename']))[0].split('_')[1:])
-    rows = [{"category": cats_map.get(r['cat_id'], {}).get("name", "sem_categoria"), "timestamp": r['ts'], "file": r['path'], "note": r['note']} for r in frames]
-    csv_io = io.StringIO(); pd.DataFrame(rows).to_csv(csv_io, index=False); csv_io.seek(0)
-    return send_file(io.BytesIO(csv_io.getvalue().encode('utf-8')), download_name=f"relatorio_{original_name}.csv", as_attachment=True)
+    
+    # Coleta os dados para o CSV
+    rows = [{
+        "category": cats_map.get(r['cat_id'], {}).get("name", "sem_categoria"), 
+        "timestamp": r['ts'], 
+        "file": r.get('path', ''),
+        "note": r.get('note', '')
+    } for r in frames]
+
+    if not rows:
+        return "Nenhum frame para exportar.", 404
+    
+    df = pd.DataFrame(rows)
+    
+    # Renomeia as colunas para português
+    df.rename(columns={
+        'category': 'Categoria',
+        'timestamp': 'Tempo (s)',
+        'file': 'Arquivo',
+        'note': 'Observação'
+    }, inplace=True)
+    
+    # Converte o DataFrame para uma string CSV
+    csv_string = df.to_csv(index=False)
+    
+    # Codifica a string para bytes usando 'utf-8-sig' para incluir o BOM (compatibilidade com Excel)
+    csv_bytes = csv_string.encode('utf-8-sig')
+    
+    buffer = io.BytesIO(csv_bytes)
+    
+    download_name = f"relatorio_{original_name}.csv"
+    
+    # Envia o arquivo, especificando o mimetype para ajudar o navegador
+    return send_file(
+        buffer,
+        download_name=download_name,
+        as_attachment=True,
+        mimetype='text/csv; charset=utf-8-sig'
+    )
+# --- Fim do Código Corrigido ---
     
 @app.route("/mediainfo/<vid>")
 def get_mediainfo(vid):
