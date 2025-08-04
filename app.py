@@ -235,6 +235,11 @@ HTML = """
     </aside>
     <div id="playerWrapper" class="bg-black flex items-center justify-center min-w-0">
       <p id="videoPrompt" class="text-gray-400 text-lg">Selecione um vídeo no painel à esquerda.</p>
+      <div id="recodePrompt" class="hidden text-center text-white p-4">
+          <p class="mb-4">O navegador não conseguiu reproduzir este vídeo, possivelmente devido a um formato incompatível.</p>
+          <button id="recodeBtn" class="bg-orange-500 hover:bg-orange-600 px-4 py-2 rounded">Converter para formato compatível</button>
+          <p id="recodeStatus" class="mt-2 text-sm text-gray-300"></p>
+      </div>
     </div>
     <aside id="rightPanel" class="panel flex flex-col bg-white shadow-lg">
       <h3 class="panel-header font-medium p-2 border-b flex justify-between items-center flex-shrink-0">
@@ -368,24 +373,87 @@ function updateAllUI() { renderCategoryList(); populateCategoryFilter(); populat
 
 $('videoFile').onchange=async e=>{
   const f=e.target.files[0]; if(!f) return;
-  $('playerWrapper').innerHTML = '<p class="text-white">Enviando e processando vídeo...</p>';
+  $('playerWrapper').innerHTML = '<p class="text-white">Enviando vídeo...</p>';
   const fd=new FormData(); 
   fd.append('video',f);
-  const {id, filename, fps}=await fetch('/upload',{method:'POST',body:fd}).then(r=>r.json());
-  vId=id;
-  currentVideoFilename = filename;
-  videoFps = fps || 30;
-  $('playerWrapper').innerHTML = `<video id="player" src="/video/${vId}" controls autoplay class="w-full h-full"></video>`;
-  player = $('player');
-  player.ontimeupdate=()=>{ const frameNum = Math.floor(player.currentTime * videoFps) + 1; ts.textContent = `t=${player.currentTime.toFixed(3)}s (frame ${frameNum})`; };
-  player.onratechange=()=> updateSpeedButtons(player.playbackRate);
+  try {
+    const response = await fetch('/upload',{method:'POST',body:fd});
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Falha no upload do servidor.');
+    }
+    const {id, filename, fps} = await response.json();
+    vId=id;
+    currentVideoFilename = filename;
+    videoFps = fps || 30;
+    
+    // Mostra o player e esconde a mensagem de recodificação
+    $('playerWrapper').innerHTML = `<video id="player" src="/video/${vId}" controls autoplay class="w-full h-full"></video>
+      <div id="recodePrompt" class="hidden text-center text-white p-4">
+          <p class="mb-4">O navegador não conseguiu reproduzir este vídeo, possivelmente devido a um formato incompatível.</p>
+          <button id="recodeBtn" class="bg-orange-500 hover:bg-orange-600 px-4 py-2 rounded">Converter para formato compatível</button>
+          <p id="recodeStatus" class="mt-2 text-sm text-gray-300"></p>
+      </div>`;
+    
+    player = $('player');
+    
+    // Adiciona o listener de erro
+    player.onerror = () => {
+        console.warn("Ocorreu um erro ao tentar reproduzir o vídeo.");
+        player.classList.add('hidden');
+        $('recodePrompt').classList.remove('hidden');
+    };
+    
+    $('recodeBtn').onclick = handleRecode;
 
-  $('ctl').classList.remove('hidden');
-  ['infoBtn', 'saveCatsBtn', 'saveGalleryBtn', 'loadGalleryBtn', 'expZip', 'expCsv'].forEach(id => $(id).disabled = false);
-  await initData();
-  updateSpeedButtons(1.0);
+    player.ontimeupdate=()=>{ const frameNum = Math.floor(player.currentTime * videoFps) + 1; ts.textContent = `t=${player.currentTime.toFixed(3)}s (frame ${frameNum})`; };
+    player.onratechange=()=> updateSpeedButtons(player.playbackRate);
+
+    $('ctl').classList.remove('hidden');
+    ['infoBtn', 'saveCatsBtn', 'saveGalleryBtn', 'loadGalleryBtn', 'expZip', 'expCsv'].forEach(id => $(id).disabled = false);
+    await initData();
+    updateSpeedButtons(1.0);
+  } catch(error) {
+    console.error("Erro no processo de upload:", error);
+    $('playerWrapper').innerHTML = `<p class="text-red-400">Ocorreu um erro ao processar o vídeo: ${error.message}</p>`;
+  }
   e.target.value = null;
 };
+
+async function handleRecode() {
+    if (!vId) return;
+    const status = $('recodeStatus');
+    const btn = $('recodeBtn');
+    
+    status.textContent = 'Convertendo... Isso pode levar alguns minutos.';
+    btn.disabled = true;
+    btn.classList.add('opacity-50');
+
+    try {
+        const response = await fetch(`/recode/${vId}`, { method: 'POST' });
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Falha na conversão do servidor.');
+        }
+        
+        status.textContent = 'Conversão concluída! Recarregando player...';
+        // Recarrega o player com um parâmetro para evitar cache
+        player.src = `/video/${vId}?t=${new Date().getTime()}`;
+        player.load();
+        
+        $('recodePrompt').classList.add('hidden');
+        player.classList.remove('hidden');
+        btn.disabled = false;
+        btn.classList.remove('opacity-50');
+
+    } catch (error) {
+        console.error("Erro ao converter vídeo:", error);
+        status.textContent = `Erro: ${error.message}`;
+        btn.disabled = false;
+        btn.classList.remove('opacity-50');
+    }
+}
+
 
 function updateSpeedButtons(newSpeed) {
     document.querySelectorAll('.sBtn').forEach(b => {
@@ -815,9 +883,11 @@ document.addEventListener('keydown', (e) => {
     if (infoModal.style.display === 'flex' || imageModal.style.display === 'flex') return;
     if (!player) return;
     let preventDefault = true;
+    
+    // --- Início da Alteração ---
     switch(e.key.toLowerCase()) {
-        case 'arrowright': next.click(); break;
-        case 'arrowleft': prev.click(); break;
+        case 'd': next.click(); break; // Alterado de 'arrowright' para 'd'
+        case 'a': prev.click(); break; // Alterado de 'arrowleft' para 'a'
         case 'enter': cap.click(); break;
         case 'l': let u = speeds.indexOf(player.playbackRate); if (u < 0) u = 1; if (u < speeds.length - 1) player.playbackRate = speeds[u + 1]; break;
         case 'j': let d = speeds.indexOf(player.playbackRate); if (d < 0) d = 1; if (d > 0) player.playbackRate = speeds[d - 1]; break;
@@ -827,6 +897,8 @@ document.addEventListener('keydown', (e) => {
             break;
         default: preventDefault = false; break;
     }
+    // --- Fim da Alteração ---
+
     if (preventDefault) e.preventDefault();
 });
 
@@ -928,7 +1000,7 @@ def import_gallery(vid):
         data, cats_by_name, default_cat = json.load(file.stream), {c['name']: c for c in load_categories_from_file()}, get_default_category()
         if not isinstance(data, list): return jsonify({"error": "JSON deve ser uma lista."}), 400
         video_info, original_user_filename = VIDEOS_SESSIONS[vid], "_".join(os.path.splitext(os.path.basename(VIDEOS_SESSIONS[vid]['filename']))[0].split('_')[1:])
-        video_fps = video_info.get('fps', 30.0) # Pega o FPS para usar no import
+        video_fps = video_info.get('fps', 30.0)
         imported_frames = []
         for idx, frame_info in enumerate(data):
             ts = frame_info.get("ts")
@@ -938,11 +1010,11 @@ def import_gallery(vid):
             frame_filename = f"{original_user_filename}_frame{idx + 1}_ts{f'{ts:.3f}'.replace('.', '_')}.png"
             fpath = os.path.join(FRAMES_DIR, frame_filename)
             extract_exact_frame(video_info['filepath'], ts, fpath)
-            video_frame_number = int(ts * video_fps) + 1 # Calcula o número do frame do vídeo
+            video_frame_number = int(ts * video_fps) + 1
             new_frame = {
                 "id": uuid.uuid4().hex, "video_id": vid, "cat_id": category['id'], "ts": ts, "path": frame_filename, 
                 "fpath": fpath, "note": note, "filters": filters, "annotations": annotations, "scale": scale, 
-                "video_frame_num": video_frame_number, # Salva o número do frame
+                "video_frame_num": video_frame_number,
                 "img_url": url_for('serve_frame_image_by_path', frame_path=frame_filename)
             }
             imported_frames.append(new_frame)
@@ -950,24 +1022,106 @@ def import_gallery(vid):
         return jsonify({"imported": len(imported_frames)})
     except Exception as e: return jsonify({"error": f"Falha ao processar: {e}"}), 500
 
+# --- Início da Alteração ---
+# ROTA DE UPLOAD RÁPIDA (SEM CONVERSÃO)
 @app.route("/upload", methods=["POST"])
 def upload():
     clear_data_folders()
     VIDEOS_SESSIONS.clear()
     FRAMES_BY_VIDEO.clear()
     f = request.files.get('video')
-    if not f or not f.filename: return jsonify({"error": "No file"}), 400
-    vid, filepath = uuid.uuid4().hex, os.path.join(VIDEOS_DIR, f"{uuid.uuid4().hex}_{f.filename}")
+    if not f or not f.filename:
+        return jsonify({"error": "Nenhum arquivo enviado"}), 400
+
+    vid = uuid.uuid4().hex
+    filepath = os.path.join(VIDEOS_DIR, f"{vid}_{f.filename}")
     f.save(filepath)
+
     fps = 30.0
     try:
         with av.open(filepath) as container:
-            if stream := container.streams.video[0]:
-                if stream.average_rate: fps = float(stream.average_rate)
-    except Exception as e: app.logger.error(f"Não foi possível determinar o FPS para {filepath}: {e}")
-    VIDEOS_SESSIONS[vid] = {'id': vid, 'filename': f.filename, 'filepath': filepath, 'fps': fps}
+            stream = next((s for s in container.streams if s.type == 'video'), None)
+            if stream and stream.average_rate:
+                fps = float(stream.average_rate)
+    except Exception as e:
+        app.logger.error(f"Não foi possível determinar o FPS para {filepath}: {e}")
+
+    VIDEOS_SESSIONS[vid] = {
+        'id': vid, 
+        'filename': f.filename, 
+        'filepath': filepath, # Caminho para o arquivo original
+        'fps': fps
+    }
     FRAMES_BY_VIDEO[vid] = []
+    
     return jsonify({"id": vid, "filename": f.filename, "fps": fps})
+
+# NOVA ROTA PARA CONVERSÃO SOB DEMANDA
+@app.route("/recode/<vid>", methods=["POST"])
+def recode_video(vid):
+    if vid not in VIDEOS_SESSIONS:
+        return jsonify({"error": "Sessão de vídeo não encontrada."}), 404
+
+    session = VIDEOS_SESSIONS[vid]
+    original_filepath = session['filepath']
+    
+    converted_filename = f"{vid}_converted.mp4"
+    converted_filepath = os.path.join(VIDEOS_DIR, converted_filename)
+
+    input_container = None
+    output_container = None
+    try:
+        input_container = av.open(original_filepath)
+        
+        in_video_stream = next((s for s in input_container.streams if s.type == 'video'), None)
+        in_audio_stream = next((s for s in input_container.streams if s.type == 'audio'), None)
+
+        if not in_video_stream:
+            raise ValueError("Nenhum stream de vídeo encontrado no arquivo.")
+
+        output_container = av.open(converted_filepath, mode='w')
+        
+        out_video_stream = output_container.add_stream('libx264', rate=in_video_stream.average_rate or 30)
+        out_video_stream.width = in_video_stream.width
+        out_video_stream.height = in_video_stream.height
+        out_video_stream.pix_fmt = 'yuv420p'
+
+        out_audio_stream = None
+        if in_audio_stream:
+            out_audio_stream = output_container.add_stream('aac')
+
+        streams_to_demux = [s for s in [in_video_stream, in_audio_stream] if s]
+        
+        for packet in input_container.demux(streams_to_demux):
+            if packet.dts is None: continue
+            
+            if packet.stream.type == 'video':
+                for frame in packet.decode():
+                    for new_packet in out_video_stream.encode(frame):
+                        output_container.mux(new_packet)
+            elif out_audio_stream and packet.stream.type == 'audio':
+                for frame in packet.decode():
+                    for new_packet in out_audio_stream.encode(frame):
+                        output_container.mux(new_packet)
+
+        for packet in out_video_stream.encode(): output_container.mux(packet)
+        if out_audio_stream:
+            for packet in out_audio_stream.encode(): output_container.mux(packet)
+            
+    except Exception as e:
+        app.logger.error(f"Falha ao converter o vídeo {original_filepath}: {e}")
+        return jsonify({"error": f"Falha na conversão: {e}"}), 500
+    finally:
+        if input_container: input_container.close()
+        if output_container: output_container.close()
+
+    session['filepath'] = converted_filepath
+    if os.path.exists(original_filepath):
+        os.remove(original_filepath)
+
+    return jsonify({"ok": True})
+# --- Fim da Alteração ---
+
 
 @app.route("/video/<vid>")
 def serve_video(vid):
@@ -1124,7 +1278,6 @@ def export_zip(vid):
     buf.seek(0)
     return send_file(buf, download_name=f"imagens_{original_name}.zip", as_attachment=True)
 
-# --- Início do Código Corrigido ---
 @app.route("/export/csv/<vid>")
 def export_csv(vid):
     if vid not in VIDEOS_SESSIONS: return "Vídeo não encontrado", 404
@@ -1132,45 +1285,23 @@ def export_csv(vid):
     cats_map = {c['id']: c for c in load_categories_from_file()}
     original_name = "_".join(os.path.splitext(os.path.basename(video_info['filename']))[0].split('_')[1:])
     
-    # Coleta os dados para o CSV
-    rows = [{
-        "category": cats_map.get(r['cat_id'], {}).get("name", "sem_categoria"), 
-        "timestamp": r['ts'], 
-        "file": r.get('path', ''),
-        "note": r.get('note', '')
-    } for r in frames]
+    rows = [{"category": cats_map.get(r['cat_id'], {}).get("name", "sem_categoria"), "timestamp": r['ts'], "file": r.get('path', ''),"note": r.get('note', '')} for r in frames]
 
     if not rows:
         return "Nenhum frame para exportar.", 404
     
     df = pd.DataFrame(rows)
     
-    # Renomeia as colunas para português
-    df.rename(columns={
-        'category': 'Categoria',
-        'timestamp': 'Tempo (s)',
-        'file': 'Arquivo',
-        'note': 'Observação'
-    }, inplace=True)
+    df.rename(columns={'category': 'Categoria','timestamp': 'Tempo (s)','file': 'Arquivo','note': 'Observação'}, inplace=True)
     
-    # Converte o DataFrame para uma string CSV
     csv_string = df.to_csv(index=False)
-    
-    # Codifica a string para bytes usando 'utf-8-sig' para incluir o BOM (compatibilidade com Excel)
     csv_bytes = csv_string.encode('utf-8-sig')
     
     buffer = io.BytesIO(csv_bytes)
     
     download_name = f"relatorio_{original_name}.csv"
     
-    # Envia o arquivo, especificando o mimetype para ajudar o navegador
-    return send_file(
-        buffer,
-        download_name=download_name,
-        as_attachment=True,
-        mimetype='text/csv; charset=utf-8-sig'
-    )
-# --- Fim do Código Corrigido ---
+    return send_file(buffer,download_name=download_name,as_attachment=True,mimetype='text/csv; charset=utf-8-sig')
     
 @app.route("/mediainfo/<vid>")
 def get_mediainfo(vid):
