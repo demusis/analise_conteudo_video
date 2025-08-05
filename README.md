@@ -86,7 +86,7 @@ No navegador, abra **[http://127.0.0.1:5000](http://127.0.0.1:5000)** para acess
 1. **Abrir terminal no projeto**
 
    ```bash
-   cd /diretório_criado/analise_conteudo_video
+   cd {caminho para o diretório_criado} analise_conteudo_video
    ```
 2. **Ativar o ambiente virtual**
 
