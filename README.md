@@ -71,11 +71,11 @@ Para executar a aplicação localmente, siga os passos abaixo.
 
 | #     | Passo                        | Comandos (copie/cole)                                                                                               | Observações                                                                                              |
 | ----- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| **1** | **Clonar o repositório**     | `bash<br>git clone https://github.com/demusis/analise_conteudo_video.git<br>cd analise_conteudo_video<br>`          | Use `cd` para entrar no diretório do projeto **antes** dos próximos passos.                              |
-| **2** | **Criar o ambiente virtual** | `bash<br>python -m venv venv<br>`                                                                                   | Cria a pasta `venv/` na raiz do projeto.                                                                 |
-| **3** | **Ativar o ambiente**        | **Windows**  <br>`bash<br>.\venv\Scripts\activate<br>`  **macOS / Linux**<br>`bash<br>source venv/bin/activate<br>` | O prompt passará a exibir `(venv)` quando ativo.                                                         |
-| **4** | **Instalar dependências**    | `bash<br>pip install -r requirements.txt<br>`                                                                       | O `requirements.txt` inclui: `Flask`, `av`, `Pillow`, `pandas`, `pymediainfo`, `opencv-python`, `numpy`. |
-| **5** | **Executar o app**           | `bash<br>python app.py  # ou<br>flask run --debug<br>`                                                              | Execute **sempre** de dentro do diretório `analise_conteudo_video` (raiz do projeto).                    |
+| **1** | **Clonar o repositório**     | `git clone https://github.com/demusis/analise_conteudo_video.git<br>cd analise_conteudo_video<br>`          | Use `cd` para entrar no diretório do projeto **antes** dos próximos passos.                              |
+| **2** | **Criar o ambiente virtual** | `python -m venv venv<br>`                                                                                   | Cria a pasta `venv/` na raiz do projeto.                                                                 |
+| **3** | **Ativar o ambiente**        | **Windows**  <br>`.\venv\Scripts\activate<br>`  **macOS / Linux**<br>`source venv/bin/activate<br>` | O prompt passará a exibir `(venv)` quando ativo.                                                         |
+| **4** | **Instalar dependências**    | `pip install -r requirements.txt<br>`                                                                       | O `requirements.txt` inclui: `Flask`, `av`, `Pillow`, `pandas`, `pymediainfo`, `opencv-python`, `numpy`. |
+| **5** | **Executar o app**           | `python app.py  # ou<br>flask run --debug<br>`                                                              | Execute **sempre** de dentro do diretório `analise_conteudo_video` (raiz do projeto).                    |
 
 No navegador, abra **[http://127.0.0.1:5000](http://127.0.0.1:5000)** para acessar a interface.
 
@@ -111,21 +111,6 @@ No navegador, abra **[http://127.0.0.1:5000](http://127.0.0.1:5000)** para acess
 
 #### 3. Dicas Úteis
 
-* **Trocar host/porta**
-
-  ```bash
-  flask run --host 0.0.0.0 --port 8000
-  ```
-* **Variáveis de ambiente do Flask**
-
-  ```bash
-  # Unix-like
-  export FLASK_APP=app.py
-  export FLASK_ENV=development
-  # Windows (PowerShell)
-  set FLASK_APP=app.py
-  set FLASK_ENV=development
-  ```
 * **Atualizar dependências**
 
   ```bash
