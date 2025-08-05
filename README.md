@@ -59,54 +59,83 @@ Para executar a aplicação localmente, siga os passos abaixo.
   - `pip` (gerenciador de pacotes do Python).
   - A ferramenta `MediaInfo` deve estar instalada no sistema e acessível no `PATH` do sistema para que a funcionalidade de exibição de metadados opere corretamente.
 
-### Passos de Instalação
 
-1.  **Clonar o Repositório** (se aplicável) ou salvar o código em um arquivo, por exemplo, `app.py`.
 
-2.  **Criar um Ambiente Virtual:**
+### Guia Rápido de Instalação e Uso
 
-    ```bash
-    python -m venv venv
-    ```
+> Estes passos funcionam para Windows, macOS e distribuições Linux.
+> **Python ≥ 3.9** é recomendado.
 
-3.  **Ativar o Ambiente Virtual:**
+---
 
-      - No Windows:
-        ```bash
-        .\venv\Scripts\activate
-        ```
-      - No macOS/Linux:
-        ```bash
-        source venv/bin/activate
-        ```
+#### 1. Primeira Instalação (setup inicial)
 
-4.  **Instalar as Dependências:**
-    Crie um arquivo `requirements.txt` com o seguinte conteúdo:
+| Etapa                              | Comando                                                                                                             | Observações                                                                                                            |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **1.1 Clonar ou baixar o projeto** | `bash<br># com Git<br>git clone https://github.com/seu-usuario/seu-repo.git<br># ou baixe o zip e extraia<br>`      | Substitua a URL pelo seu repositório real.                                                                             |
+| **1.2 Criar o ambiente virtual**   | `bash<br>python -m venv venv<br>`                                                                                   | O diretório `venv/` será criado na raiz do projeto.                                                                    |
+| **1.3 Ativar o ambiente virtual**  | **Windows**  <br>`bash<br>.\venv\Scripts\activate<br>`  **macOS / Linux**<br>`bash<br>source venv/bin/activate<br>` | Você saberá que o ambiente está ativo quando aparecer `(venv)` antes do prompt.                                        |
+| **1.4 Instalar dependências**      | `bash<br>pip install -r requirements.txt<br>`                                                                       | O arquivo `requirements.txt` já contém:<br>`Flask`, `av`, `Pillow`, `pandas`, `pymediainfo`, `opencv-python`, `numpy`. |
+| **1.5 Executar a aplicação**       | `bash<br>python app.py  # ou<br>flask run --debug<br>`                                                              | O modo **debug** recarrega o servidor a cada alteração.                                                                |
 
-    ```
-    Flask
-    av
-    Pillow
-    pandas
-    pymediainfo
-    opencv-python
-    numpy
-    ```
+Abra o navegador em **[http://127.0.0.1:5000](http://127.0.0.1:5000)** para ver a interface.
 
-    Em seguida, instale as bibliotecas com o comando:
+---
 
-    ```bash
-    pip install -r requirements.txt
-    ```
+#### 2. Sessões Futuras (após o primeiro dia)
 
-5.  **Executar a Aplicação:**
+Sempre que quiser usar o projeto novamente:
 
-    ```bash
-    python app.py
-    ```
+1. Abra um terminal/cmd dentro da pasta do projeto.
+2. **Ative** o ambiente virtual:
 
-6.  **Acessar a Ferramenta:**
-    Abra um navegador web e acesse o endereço: `http://127.0.0.1:5000`
+   ```bash
+   # Windows
+   .\venv\Scripts\activate
+   # macOS / Linux
+   source venv/bin/activate
+   ```
+3. Rode o app:
+
+   ```bash
+   python app.py
+   ```
+4. Quando terminar, **desative** o ambiente:
+
+   ```bash
+   deactivate
+   ```
+
+---
+
+#### 3. Dicas Extras
+
+* **Porta ou host diferentes**
+
+  ```bash
+  flask run --host 0.0.0.0 --port 8000
+  ```
+* **Variáveis de ambiente do Flask** (opcional):
+
+  ```bash
+  # Unix-like
+  export FLASK_APP=app.py
+  export FLASK_ENV=development
+  # Windows (PowerShell)
+  set FLASK_APP=app.py
+  set FLASK_ENV=development
+  ```
+* **Atualizar dependências**
+
+  ```bash
+  pip install --upgrade -r requirements.txt
+  ```
+* **Excluir o ambiente virtual**
+  Basta apagar a pasta `venv/` e recriá-la quando necessário.
+
+Com isso, você terá um README mais completo, cobrindo tanto a configuração inicial quanto o fluxo de trabalho diário.
+
+
 
 -----
 
