@@ -39,7 +39,7 @@ A ferramenta foi concebida para operar em sessões de análise discretas. O esta
   - **NumPy:** Suporte para manipulação de arrays multidimensionais nas rotinas de imagem.
   - **Pillow (PIL):** Utilizada para a manipulação básica de imagens.
   - **Pandas:** Empregado para a estruturação e exportação dos dados para o formato `.csv`.
-  - **PyMediaInfo:** Wrapper para a ferramenta `MediaInfo`, usada para extrair metadados detalhados dos arquivos de vídeo.
+  - **PyMediaInfo:** Wrapper para a ferramenta `MediaInfo` (disponível em https://mediaarea.net/pt/MediaInfo), usada para extrair metadados detalhados dos arquivos de vídeo.
 
 ### Frontend
 
@@ -86,7 +86,7 @@ No navegador, abra **[http://127.0.0.1:5000](http://127.0.0.1:5000)** para acess
 1. **Abrir terminal no projeto**
 
    ```bash
-   cd /caminho/para/analise_conteudo_video
+   cd /diretório_criado/analise_conteudo_video
    ```
 2. **Ativar o ambiente virtual**
 
@@ -150,3 +150,5 @@ O projeto consiste em um único arquivo `app.py` que contém tanto a lógica do 
   - **Armazenamento em Memória:** Os dados da sessão de análise (frames capturados, anotações) são voláteis. Reiniciar o servidor ou carregar um novo vídeo resultará na perda dos dados da sessão corrente. Apenas as categorias são salvas em disco.
   - **Sessão Única:** A aplicação foi projetada para analisar um vídeo por vez. Não há suporte para múltiplas sessões ou utilizadores simultâneos.
   - **Processamento de Arquivos Grandes:** O upload e processamento de arquivos de vídeo muito grandes podem consumir uma quantidade elevada de recursos do sistema (CPU e RAM).
+  - **Limitações:** O upload e processamento de arquivos de vídeo muito grandes podem consumir uma quantidade elevada de recursos do sistema (CPU e RAM).
+  - **Tipos de vídeo:** O aplicativo consegue trabalhar com arquivos de vídeo/codecs compatíveis com o navegador e com os aplicativos `ffmpeg` e `mediainfo`.
