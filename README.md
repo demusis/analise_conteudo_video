@@ -59,35 +59,36 @@ Para executar a aplicação localmente, siga os passos abaixo.
   - `pip` (gerenciador de pacotes do Python).
   - A ferramenta `MediaInfo` deve estar instalada no sistema e acessível no `PATH` do sistema para que a funcionalidade de exibição de metadados opere corretamente.
 
+### Guia Rápido de Instalação e Uso <!-- README.md -->
 
-
-### Guia Rápido de Instalação e Uso
-
-> Estes passos funcionam para Windows, macOS e distribuições Linux.
-> **Python ≥ 3.9** é recomendado.
+> **Requisitos**
+> • Python ≥ 3.9 • Git instalado (opcional, mas recomendado)
+> As instruções cobrem **Windows**, **macOS** e **Linux**.
 
 ---
 
 #### 1. Primeira Instalação (setup inicial)
 
-| Etapa                              | Comando                                                                                                             | Observações                                                                                                            |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| **1.1 Clonar ou baixar o projeto** | `bash<br># com Git<br>git clone https://github.com/seu-usuario/seu-repo.git<br># ou baixe o zip e extraia<br>`      | Substitua a URL pelo seu repositório real.                                                                             |
-| **1.2 Criar o ambiente virtual**   | `bash<br>python -m venv venv<br>`                                                                                   | O diretório `venv/` será criado na raiz do projeto.                                                                    |
-| **1.3 Ativar o ambiente virtual**  | **Windows**  <br>`bash<br>.\venv\Scripts\activate<br>`  **macOS / Linux**<br>`bash<br>source venv/bin/activate<br>` | Você saberá que o ambiente está ativo quando aparecer `(venv)` antes do prompt.                                        |
-| **1.4 Instalar dependências**      | `bash<br>pip install -r requirements.txt<br>`                                                                       | O arquivo `requirements.txt` já contém:<br>`Flask`, `av`, `Pillow`, `pandas`, `pymediainfo`, `opencv-python`, `numpy`. |
-| **1.5 Executar a aplicação**       | `bash<br>python app.py  # ou<br>flask run --debug<br>`                                                              | O modo **debug** recarrega o servidor a cada alteração.                                                                |
+| #     | Passo                        | Comandos (copie/cole)                                                                                               | Observações                                                                                              |
+| ----- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **1** | **Clonar o repositório**     | `bash<br>git clone https://github.com/demusis/analise_conteudo_video.git<br>cd analise_conteudo_video<br>`          | Use `cd` para entrar no diretório do projeto **antes** dos próximos passos.                              |
+| **2** | **Criar o ambiente virtual** | `bash<br>python -m venv venv<br>`                                                                                   | Cria a pasta `venv/` na raiz do projeto.                                                                 |
+| **3** | **Ativar o ambiente**        | **Windows**  <br>`bash<br>.\venv\Scripts\activate<br>`  **macOS / Linux**<br>`bash<br>source venv/bin/activate<br>` | O prompt passará a exibir `(venv)` quando ativo.                                                         |
+| **4** | **Instalar dependências**    | `bash<br>pip install -r requirements.txt<br>`                                                                       | O `requirements.txt` inclui: `Flask`, `av`, `Pillow`, `pandas`, `pymediainfo`, `opencv-python`, `numpy`. |
+| **5** | **Executar o app**           | `bash<br>python app.py  # ou<br>flask run --debug<br>`                                                              | Execute **sempre** de dentro do diretório `analise_conteudo_video` (raiz do projeto).                    |
 
-Abra o navegador em **[http://127.0.0.1:5000](http://127.0.0.1:5000)** para ver a interface.
+No navegador, abra **[http://127.0.0.1:5000](http://127.0.0.1:5000)** para acessar a interface.
 
 ---
 
 #### 2. Sessões Futuras (após o primeiro dia)
 
-Sempre que quiser usar o projeto novamente:
+1. **Abrir terminal no projeto**
 
-1. Abra um terminal/cmd dentro da pasta do projeto.
-2. **Ative** o ambiente virtual:
+   ```bash
+   cd /caminho/para/analise_conteudo_video
+   ```
+2. **Ativar o ambiente virtual**
 
    ```bash
    # Windows
@@ -95,12 +96,12 @@ Sempre que quiser usar o projeto novamente:
    # macOS / Linux
    source venv/bin/activate
    ```
-3. Rode o app:
+3. **Rodar a aplicação**
 
    ```bash
    python app.py
    ```
-4. Quando terminar, **desative** o ambiente:
+4. **Desativar quando terminar**
 
    ```bash
    deactivate
@@ -108,14 +109,14 @@ Sempre que quiser usar o projeto novamente:
 
 ---
 
-#### 3. Dicas Extras
+#### 3. Dicas Úteis
 
-* **Porta ou host diferentes**
+* **Trocar host/porta**
 
   ```bash
   flask run --host 0.0.0.0 --port 8000
   ```
-* **Variáveis de ambiente do Flask** (opcional):
+* **Variáveis de ambiente do Flask**
 
   ```bash
   # Unix-like
@@ -130,12 +131,8 @@ Sempre que quiser usar o projeto novamente:
   ```bash
   pip install --upgrade -r requirements.txt
   ```
-* **Excluir o ambiente virtual**
-  Basta apagar a pasta `venv/` e recriá-la quando necessário.
-
-Com isso, você terá um README mais completo, cobrindo tanto a configuração inicial quanto o fluxo de trabalho diário.
-
-
+* **Recriar o ambiente virtual**
+  Apague `venv/` e refaça os passos 2-4 se necessário.
 
 -----
 
